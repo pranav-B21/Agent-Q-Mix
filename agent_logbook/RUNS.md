@@ -328,3 +328,18 @@ Don't change their torch/vllm pins, and don't restart the server while Setting A
   before vLLM was up, not confirmed. **Repeat this with a proper ready check before regenerating.**
 - **Open:** an agent that fails all retries doesn't fail the episode. It is only visible through
   `executed_agents`, so filter on that or make the episode error out.
+
+## 2026-11-02 — Replication job tests, interactive
+
+- **Host:** `c642-032`, idev job `1116331`. gpt-oss-120b on :8234. Output:
+  `/scratch/11138/pranavbelligundu/gcsl_mas/replicate_test/`
+- **Scripts:** `scripts/sbatch_replicate_qmix.sh` (VARIANT=released|fixed, paper recipe),
+  `scripts/sbatch_replicate_baselines.sh`, `experiments/run_base_eval.py`,
+  `experiments/summarize_replication.py`.
+- **Released and fixed:** each trained 3 controllers (2 episodes) and scored 4 benchmarks (2 items),
+  0 errors. Calls per item: released 1–4; fixed 7 (2 rounds) or 10 (3 rounds), all 3 agents ran.
+  Fixed LiveCodeBench: 5 truncated calls and 1 reasoning fallback on one item.
+- **Baselines:** Base ran one item. All 4 frameworks first crashed on `pkg_resources`
+  (`.venv_base` now has `setuptools<80`). Agent Framework then needed `agent-framework-openai`,
+  now installed. Lobster, AutoGen and LangGraph started, but those attempts hit connection errors
+  because the server had stopped. No framework is confirmed to get a scored answer yet.

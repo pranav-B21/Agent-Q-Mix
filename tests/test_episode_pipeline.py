@@ -67,4 +67,25 @@ assert ep.steps[1].adj_matrix.sum() == 3
 
 # Tokens per agent reach the observation (its token_ratio feature was always 0 before).
 assert all(t > 0 for t in ep.steps[0].agent_tokens)
+# An agent that fails every retry fails the episode rather than leaving a partial team.
+async def failing_achat(model_name, messages, max_tokens=1024, temperature=0.2):
+    raise ConnectionError("server down")
+
+
+def _failing_episode():
+    n = 3
+    o = get_obs_dim(n)
+    t = QMIXTrainer(n_agents=n, obs_dim=o, state_dim=get_state_dim(n, o), n_actions=NUM_ACTIONS)
+    t.select_actions = lambda obs, adj, h, eps: (torch.zeros(n, dtype=torch.long), h)
+    g = QMIXGraph(domain="aime", llm_name="Qwen/Qwen3-1.7B", agent_names=AGENTS, decision_method="FinalRefer")
+    gc.achat = failing_achat
+    return asyncio.run(run_episode(g, t, "What is 3+4?", 1.0, num_rounds=2))
+
+
+try:
+    _failing_episode()
+    raise AssertionError("episode with a failed agent did not raise")
+except RuntimeError as e:
+    assert "failed all" in str(e)
+
 print("all episode pipeline checks passed")

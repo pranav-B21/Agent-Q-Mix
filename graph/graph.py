@@ -275,9 +275,10 @@ class QMIXGraph:
         while len(finished) < len(self.nodes):
             ready = [nid for nid in self.node_ids if nid not in finished and waits_on[nid] <= finished]
             if not ready:
-                # _check_cycle should make this impossible; running them beats silently skipping.
+                # Debate's reverse edge skips _check_cycle, so a joint action like [3,3,5] can
+                # form a longer cycle. Run the first unfinished agent rather than skip any.
                 ready = [nid for nid in self.node_ids if nid not in finished]
-                logger.warning(f"Dependency cycle among {ready}; running in index order")
+                logger.warning(f"Dependency cycle among {ready}; breaking it at {ready[0]}")
             current_id = ready[0]
             node = self.nodes[current_id]
             before = PromptTokens.instance().value + CompletionTokens.instance().value
@@ -288,6 +289,9 @@ class QMIXGraph:
                     break
                 except Exception as e:
                     logger.warning(f"Node {current_id} attempt {attempt + 1} failed: {e}")
+            else:
+                # A partial team must not be recorded as a normal episode.
+                raise RuntimeError(f"Agent {current_id} failed all {max_tries} attempts")
             node.token_usage = int(PromptTokens.instance().value + CompletionTokens.instance().value - before)
             finished.add(current_id)
 

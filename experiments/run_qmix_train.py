@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from qmix.qmix_trainer import QMIXTrainer
 from qmix.replay_buffer import Episode, EpisodeStep
 from qmix.agent_network import NUM_ACTIONS
-from graph.graph import QMIXGraph
+from graph.graph import QMIXGraph, LEGACY_EXECUTION
 from datasets import get_dataset
 from utils.log import get_logger
 from utils.globals import PromptTokens, CompletionTokens, Cost
@@ -98,7 +98,12 @@ async def run_episode(
         actions, hidden = trainer.select_actions(obs, adj, hidden, epsilon)
 
         tokens_before = PromptTokens.instance().value + CompletionTokens.instance().value
-        await graph.run_round({"task": task_text}, actions, step)
+        if LEGACY_EXECUTION:
+            # Upstream's loop: one arun per round, so the decision node runs every round and
+            # round 2 is never linked back to round 1.
+            answers, _ = await graph.arun({"task": task_text}, num_rounds=1, actions=actions)
+        else:
+            await graph.run_round({"task": task_text}, actions, step)
         tokens_used = int(PromptTokens.instance().value + CompletionTokens.instance().value - tokens_before)
 
         new_obs = torch.tensor(graph.get_observation_features(task_text), dtype=torch.float32)
@@ -123,6 +128,9 @@ async def run_episode(
         obs = new_obs
         adj = new_adj
 
+    if LEGACY_EXECUTION:
+        return episode, answers
+
     # The decision node runs once per episode, after the last round; its tokens count there.
     tokens_before = PromptTokens.instance().value + CompletionTokens.instance().value
     answers = await graph.decide({"task": task_text})
@@ -133,6 +141,9 @@ async def run_episode(
 
 async def train(args):
     """Main training loop. Supports single-dataset or multi-dataset interleaved training."""
+    if args.seed is not None:
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
     dataset_names = [d.strip() for d in args.dataset.split(",")]
     is_multi = len(dataset_names) > 1
 
@@ -226,9 +237,13 @@ async def train(args):
             decision_method=args.decision_method,
         )
 
-        episode, answers = await run_episode(
-            graph, trainer, sample.task, epsilon, num_rounds=args.num_rounds,
-        )
+        try:
+            episode, answers = await run_episode(
+                graph, trainer, sample.task, epsilon, num_rounds=args.num_rounds,
+            )
+        except Exception as e:
+            logger.error(f"Episode {ep_idx + 1} failed, skipping: {type(e).__name__}: {e}")
+            continue
 
         answer_text = answers[0] if answers else ""
         accuracy = dataset.evaluate(answer_text, sample.ground_truth)
@@ -315,6 +330,7 @@ def main():
     parser.add_argument("--resume_path", type=str, default=None,
                         help="Path to an existing checkpoint to resume training from")
     parser.add_argument("--log_interval", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
     if args.save_path is None:

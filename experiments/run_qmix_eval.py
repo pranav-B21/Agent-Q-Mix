@@ -34,7 +34,7 @@ from experiments.run_qmix_train import (
     DOMAIN_MAP, AGENT_CONFIGS, get_obs_dim, get_state_dim,
 )
 from utils.log import get_logger
-from utils.globals import PromptTokens, CompletionTokens, Cost
+from utils.globals import PromptTokens, CompletionTokens, Cost, LLMCalls
 
 logger = get_logger("qmix_eval")
 
@@ -80,6 +80,7 @@ async def evaluate_qmix(args):
         Cost.instance().reset()
         PromptTokens.instance().reset()
         CompletionTokens.instance().reset()
+        LLMCalls.instance().reset()
 
         graph = QMIXGraph(
             domain=domain,
@@ -116,6 +117,11 @@ async def evaluate_qmix(args):
             "ground_truth": sample.ground_truth[:200],
             "actions": actions.tolist(),
             "cost": Cost.instance().value,
+            "full_prediction": answer_text,
+            "agents_run_last_round": list(graph.last_executed),
+            "llm_calls": len(LLMCalls.instance().value),
+            "truncated_calls": sum(c.get("finish_reason") == "length" for c in LLMCalls.instance().value),
+            "reasoning_fallback_calls": sum(bool(c.get("reasoning_fallback")) for c in LLMCalls.instance().value),
         })
 
         _s_elapsed = _time.time() - _s_start

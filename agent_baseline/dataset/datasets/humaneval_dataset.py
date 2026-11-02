@@ -19,7 +19,7 @@ class HumanEvalDataset(BaseDataset):
     def _load(self) -> List[DataSample]:
         try:
             from .hf_loader import load_hf_dataset
-            ds = load_hf_dataset("openai_humaneval", split="test")
+            ds = load_hf_dataset("openai/openai_humaneval", split="test")
         except Exception:
             if self.data_path:
                 return self._load_from_file(self.data_path)
