@@ -26,6 +26,7 @@ def _build_chat_endpoint(base_url: Optional[str]) -> str:
 
 MINE_BASE_URL = _build_chat_endpoint(_RAW_BASE_URL)
 MINE_API_KEYS = _RAW_API_KEY
+MIN_MAX_TOKENS = int(os.getenv("LLM_MIN_MAX_TOKENS", "4096"))
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_random_exponential(multiplier=1, max=60))
@@ -38,9 +39,12 @@ async def achat(model_name: str, messages: list, max_tokens: int = 1024, tempera
         "model": model_name,
         "messages": [m.to_dict() if isinstance(m, Message) else m for m in messages],
         "stream": False,
-        "max_tokens": max(max_tokens, 4096),
+        "max_tokens": max(max_tokens, MIN_MAX_TOKENS),
         "temperature": temperature,
     }
+    # Match scripts/serve_qwen.py: Qwen3 served by vLLM runs with thinking disabled.
+    if model_name.startswith("Qwen/Qwen3"):
+        data["chat_template_kwargs"] = {"enable_thinking": False}
     async with aiohttp.ClientSession() as session:
         async with session.post(MINE_BASE_URL, headers=headers, json=data) as response:
             if "application/json" not in (response.headers.get("Content-Type") or ""):
@@ -55,11 +59,17 @@ async def achat(model_name: str, messages: list, max_tokens: int = 1024, tempera
                 error_message = response_data.get("error", {}).get("message", "Unknown error")
                 raise Exception(f"API Error: {error_message}")
             prompt = "".join([m.content if isinstance(m, Message) else m.get("content", "") for m in messages])
-            msg = response_data["choices"][0]["message"]
+            choice = response_data["choices"][0]
+            msg = choice["message"]
             completion = msg.get("content") or ""
-            if not completion.strip() and msg.get("reasoning"):
-                completion = msg["reasoning"]
-            cost_count(prompt, completion, model_name)
+            reasoning = msg.get("reasoning") or msg.get("reasoning_content")
+            reasoning_fallback = not completion.strip() and bool(reasoning)
+            if reasoning_fallback:
+                completion = reasoning
+            cost_count(
+                prompt, completion, model_name, usage=response_data.get("usage"),
+                finish_reason=choice.get("finish_reason"), reasoning_fallback=reasoning_fallback,
+            )
             return completion
 
 
@@ -73,6 +83,7 @@ async def achat(model_name: str, messages: list, max_tokens: int = 1024, tempera
 @LLMRegistry.register("qwen-turbo")
 @LLMRegistry.register("qwen-plus")
 @LLMRegistry.register("qwen-max")
+@LLMRegistry.register("Qwen/Qwen3-1.7B")
 @LLMRegistry.register("Qwen/Qwen3-8B")
 @LLMRegistry.register("google/gemma-3-12b-it")
 @LLMRegistry.register("Qwen/Qwen3-14B")

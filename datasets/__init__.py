@@ -3,7 +3,7 @@ from .humaneval_dataset import HumanEvalDataset
 from .mmlu_dataset import MMLUProDataset
 from .math_dataset import (
     AIME2024Dataset, AIME2025Dataset, AIME2026Dataset,
-    BeyondAIMEDataset, HMMT2025Dataset,
+    BeyondAIMEDataset, HMMT2025Dataset, Math500IntDataset,
 )
 from .livecodebench_dataset import LiveCodeBenchDataset, LiveCodeBenchTestGenDataset
 from .gaia_dataset import GAIADataset
@@ -25,6 +25,7 @@ DATASET_REGISTRY = {
     "aime_2026": AIME2026Dataset,
     "beyond_aime": BeyondAIMEDataset,
     "hmmt_2025": HMMT2025Dataset,
+    "math500_int": Math500IntDataset,
     "hle": HLEDataset,
 }
 

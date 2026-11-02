@@ -23,6 +23,9 @@ class EpisodeStep:
     global_state: np.ndarray       # (state_dim,)
     done: bool = False
     token_usage: int = 0           # total tokens used this step
+    executed_adj: Optional[np.ndarray] = None   # (N, N) graph that actually ran this step
+    executed_agents: Optional[list] = None      # agent ids that ran, in execution order
+    agent_tokens: Optional[list] = None         # (N,) tokens per agent this step
 
 
 @dataclass

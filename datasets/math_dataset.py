@@ -163,3 +163,32 @@ class HMMT2025Dataset(_MathBaseDataset):
         except Exception as e:
             print(f"[hmmt_2025] HF load failed: {e}")
             return []
+
+
+class Math500IntDataset(_MathBaseDataset):
+    """HuggingFaceH4/MATH-500, integer-answer subset (311/500).
+
+    Restricted to integer answers because _MathBaseDataset.evaluate compares the last
+    number in the text, which mis-scores LaTeX answers such as \\frac{1}{2}.
+    """
+
+    def __init__(self, split="test", limit=None, data_path=None):
+        super().__init__(split, limit, data_path)
+        self.domain = "aime"
+
+    def _load(self):
+        if self.data_path:
+            return self._load_from_file(self.data_path)
+        try:
+            from .hf_loader import load_hf_dataset
+            ds = load_hf_dataset("HuggingFaceH4/MATH-500", split="test")
+            return [DataSample(
+                task_id=item["unique_id"],
+                task=item["problem"],
+                ground_truth=item["answer"].strip(),
+                metadata={"level": item["level"], "subject": item["subject"]},
+                domain=self.domain,
+            ) for item in ds if re.fullmatch(r"-?\d+", item["answer"].strip())]
+        except Exception as e:
+            print(f"[math500_int] HF load failed: {e}")
+            return []

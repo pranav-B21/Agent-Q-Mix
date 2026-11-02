@@ -16,6 +16,7 @@ Communication patterns are determined by QMIX agent actions:
   - debate_check: adversarial edges
 """
 
+import os
 import shortuuid
 import numpy as np
 import torch
@@ -30,6 +31,10 @@ from utils.log import get_logger
 from utils.globals import PromptTokens, CompletionTokens
 
 logger = get_logger("graph")
+
+# QMIX_LEGACY_EXEC=1 keeps upstream's execution, where any agent with an incoming edge never
+# runs (see _execute_round_legacy). Only for reproducing the published results.
+LEGACY_EXECUTION = os.getenv("QMIX_LEGACY_EXEC", "0") == "1"
 
 
 TOPOLOGY_PRESETS = {
@@ -96,6 +101,8 @@ class QMIXGraph:
 
         self.n_agents = len(self.nodes)
         self.node_ids = list(self.nodes.keys())
+        self.last_executed: List[str] = []
+        self.last_adj = np.zeros((self.n_agents, self.n_agents))
 
         if fixed_topology and fixed_topology in TOPOLOGY_PRESETS:
             self._fixed_adj = TOPOLOGY_PRESETS[fixed_topology](self.n_agents)
@@ -210,27 +217,79 @@ class QMIXGraph:
         tokens_before = PromptTokens.instance().value + CompletionTokens.instance().value
 
         for round_idx in range(num_rounds):
-            if actions is not None:
-                self.apply_qmix_actions(actions)
-            elif self._fixed_adj is not None:
-                self.apply_topology(self._fixed_adj)
+            await self.run_round(input, actions, round_idx, max_tries, max_time)
 
-            if round_idx > 0:
-                self._connect_temporal(round_idx)
-
-            await self._execute_round(input, max_tries, max_time)
-            self._update_memory()
-
-        self._connect_decision_node()
-        await self.decision_node.async_execute(input)
-        final_answers = self.decision_node.outputs
-        if not final_answers:
-            final_answers = ["No answer produced"]
+        final_answers = await self.decide(input)
 
         tokens_after = PromptTokens.instance().value + CompletionTokens.instance().value
         total_tokens = int(tokens_after - tokens_before)
 
         return final_answers, total_tokens
+
+    async def run_round(self, input, actions, round_idx, max_tries=3, max_time=300):
+        """Run one communication round. round_idx > 0 links each agent to its previous output."""
+        if actions is not None:
+            self.apply_qmix_actions(actions)
+        elif self._fixed_adj is not None:
+            self.apply_topology(self._fixed_adj)
+
+        if round_idx > 0:
+            self._connect_temporal(round_idx)
+
+        self.last_executed = []
+        if LEGACY_EXECUTION:
+            await self._execute_round_legacy(input, max_tries, max_time)
+        else:
+            await self._execute_round(input, max_tries, max_time)
+        self.last_adj = self.get_adj_matrix()
+        self._update_memory()
+
+    async def decide(self, input):
+        """Run the decision node over the agents' latest outputs."""
+        self._connect_decision_node()
+        await self.decision_node.async_execute(input)
+        return self.decision_node.outputs or ["No answer produced"]
+
+    async def _execute_round(self, input, max_tries, max_time):
+        """Execute all agents in dependency order, so each sees its predecessors' outputs.
+
+        Debate adds mutual edges (A <-> B). The lower-indexed agent runs first and its partner
+        sees that output; the first agent sees its partner's output from the previous round.
+        """
+        nid_of = {node.id: nid for nid, node in self.nodes.items()}
+        order = {nid: i for i, nid in enumerate(self.node_ids)}
+
+        waits_on = {}
+        for nid, node in self.nodes.items():
+            preds = set()
+            for pred in node.spatial_predecessors:
+                pred_nid = nid_of.get(pred.id)
+                if pred_nid is None:
+                    continue
+                if pred in node.spatial_successors and order[nid] < order[pred_nid]:
+                    continue  # mutual edge: the lower-indexed agent goes first
+                preds.add(pred_nid)
+            waits_on[nid] = preds
+
+        finished = set()
+        while len(finished) < len(self.nodes):
+            ready = [nid for nid in self.node_ids if nid not in finished and waits_on[nid] <= finished]
+            if not ready:
+                # _check_cycle should make this impossible; running them beats silently skipping.
+                ready = [nid for nid in self.node_ids if nid not in finished]
+                logger.warning(f"Dependency cycle among {ready}; running in index order")
+            current_id = ready[0]
+            node = self.nodes[current_id]
+            before = PromptTokens.instance().value + CompletionTokens.instance().value
+            for attempt in range(max_tries):
+                try:
+                    await asyncio.wait_for(node.async_execute(input), timeout=max_time)
+                    self.last_executed.append(current_id)
+                    break
+                except Exception as e:
+                    logger.warning(f"Node {current_id} attempt {attempt + 1} failed: {e}")
+            node.token_usage = int(PromptTokens.instance().value + CompletionTokens.instance().value - before)
+            finished.add(current_id)
 
     def _is_mutual_edge(self, nid_a, nid_b):
         """Check if two nodes share a bidirectional (mutual) edge."""
@@ -238,8 +297,12 @@ class QMIXGraph:
         node_b = self.nodes[nid_b]
         return node_b in node_a.spatial_successors and node_a in node_b.spatial_successors
 
-    async def _execute_round(self, input, max_tries, max_time):
-        """Execute all nodes in topological order.
+    async def _execute_round_legacy(self, input, max_tries, max_time):
+        """Upstream execution, kept for reproducing published results.
+
+        self.nodes is keyed by names like "MathSolver_0" but pred.id / successor.id are random
+        node ids, so both lookups below always fail: inbound edges are counted but never
+        released, and any agent with an incoming edge never runs. No agent sees a peer's answer.
 
         Mutual edges (A <-> B) from debate actions are handled by breaking
         symmetry: the lower-ID node's inbound mutual edge is not counted,
@@ -352,7 +415,10 @@ class QMIXGraph:
         return np.stack(obs_list)
 
     def _task_to_features(self, task: str, dim: int = 32) -> np.ndarray:
-        """Simple hash-based task feature extraction."""
+        """Task features: byte hash by default, or a text embedding with QMIX_TASK_ENCODER=st."""
+        if os.getenv("QMIX_TASK_ENCODER", "hash") == "st":
+            from utils.task_encoder import encode_task
+            return encode_task(task, dim)
         features = np.zeros(dim)
         for i, c in enumerate(task.encode()[:dim * 4]):
             features[i % dim] += c / 255.0

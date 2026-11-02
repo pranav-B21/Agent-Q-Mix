@@ -45,6 +45,7 @@ DOMAIN_MAP = {
     "aime_2026": "aime",
     "beyond_aime": "aime",
     "hmmt_2025": "hmmt",
+    "math500_int": "aime",
     "hle": "hle",
 }
 
@@ -60,6 +61,7 @@ AGENT_CONFIGS = {
     "aime_2026": ["MathSolver", "MathSolver", "AnalyzeAgent"],
     "beyond_aime": ["MathSolver", "MathSolver", "AnalyzeAgent"],
     "hmmt_2025": ["MathSolver", "MathSolver", "AnalyzeAgent"],
+    "math500_int": ["MathSolver", "MathSolver", "AnalyzeAgent"],
     "hle": ["ReasoningAgent", "ReasoningAgent", "AnalyzeAgent"],
 }
 
@@ -96,12 +98,8 @@ async def run_episode(
         actions, hidden = trainer.select_actions(obs, adj, hidden, epsilon)
 
         tokens_before = PromptTokens.instance().value + CompletionTokens.instance().value
-        answers, tokens_used = await graph.arun(
-            {"task": task_text},
-            num_rounds=1,
-            actions=actions,
-        )
-        tokens_after = PromptTokens.instance().value + CompletionTokens.instance().value
+        await graph.run_round({"task": task_text}, actions, step)
+        tokens_used = int(PromptTokens.instance().value + CompletionTokens.instance().value - tokens_before)
 
         new_obs = torch.tensor(graph.get_observation_features(task_text), dtype=torch.float32)
         new_adj = torch.tensor(graph.get_adj_matrix(), dtype=torch.float32)
@@ -116,11 +114,19 @@ async def run_episode(
             global_state=global_state,
             done=(step == num_rounds - 1),
             token_usage=tokens_used,
+            executed_adj=graph.last_adj.copy(),
+            executed_agents=list(graph.last_executed),
+            agent_tokens=[graph.nodes[nid].token_usage for nid in graph.node_ids],
         )
         episode.add_step(step_data)
 
         obs = new_obs
         adj = new_adj
+
+    # The decision node runs once per episode, after the last round; its tokens count there.
+    tokens_before = PromptTokens.instance().value + CompletionTokens.instance().value
+    answers = await graph.decide({"task": task_text})
+    episode.steps[-1].token_usage += int(PromptTokens.instance().value + CompletionTokens.instance().value - tokens_before)
 
     return episode, answers
 

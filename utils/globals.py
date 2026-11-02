@@ -26,6 +26,16 @@ class CompletionTokens(Singleton):
         self.value = 0.0
 
 
+class LLMCalls(Singleton):
+    """Per-call records for the current episode: tokens, finish_reason, reasoning fallback."""
+
+    def __init__(self):
+        self.value = []
+
+    def reset(self):
+        self.value = []
+
+
 class Time(Singleton):
     def __init__(self):
         self.value = ""
